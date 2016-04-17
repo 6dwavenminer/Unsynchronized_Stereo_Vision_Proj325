@@ -1,9 +1,9 @@
 /*
 Unsynchronized_Stereo_Vision_Proj325
 Author: Oliver Thurgood
-Version: 0.2.4
+Version: 0.2.6
 Created on: 05/02/2016
-Last edited on: 31/03/2016
+Last edited on: 17/04/2016
 */
 
 
@@ -28,10 +28,24 @@ Last edited on: 31/03/2016
 #include <future>
 #include "Match.hpp"
 
+//Namespace list
 using namespace cv;
 using namespace std;
+using namespace std::chrono;
 
+//Mutex list
 mutex mtPrev;
+mutex LeftTimeStampMutex;
+mutex RightTimeStampMutex;
+mutex LeftContourMutex;
+mutex RightContourMutex;
+mutex LeftVectorCenterMutex;
+mutex RightVectorCenterMutex;
+mutex LeftDistanceMutex;
+mutex RightDistanceMutex;
+
+#define LeftCam true
+#define RightCam false
 
 struct absdiffFinderParameters {
 	//parameters here
@@ -53,6 +67,16 @@ struct CalibrationDataParameters {
 	Mat RotationMat, TranslationMat, EssentailMat, FundamentalMat;
 	Mat RectificationTransformMatL, RectificationTransformMatR, ProjectionMatL, ProjectionMatR, Disparity2DepthMappingMat;
 	Mat map1x, map1y, map2x, map2y;
+};
+
+struct CenterPointDataParameters {
+	std::vector<Point2f> VectorCenter_point;
+	std::vector<Point2f> OldVectorCenter_point;
+	std::vector<Point2f> OlderVectorCenter_point;
+	std::vector <Point3i> InterframeMatchIndexesComplete;
+	std::chrono::steady_clock::time_point ImgTimeStamp;
+	std::chrono::steady_clock::time_point OldImgTimeStamp;
+	std::chrono::steady_clock::time_point OlderImgTimeStamp;
 };
 
 void ABSDiffSearchOld(Mat GrayL,Mat GrayR,Mat &ThesholdImageL,Mat &ThesholdImageR, Mat &PrevL, Mat &PrevR) {
@@ -143,7 +167,13 @@ void CannySearchOld(Mat* GrayL, Mat* GrayR, Mat &ThesholdImageL, Mat &ThesholdIm
 	}
 }
 
-void CannySearch(Mat* GrayL, Mat &ThesholdImageL,Mat &PrevL, Mat &PrevL2) {
+void CannySearch(bool CameraSide,Mat* GrayL, Mat &ThesholdImageL,Mat &PrevL, Mat &PrevL2) {
+	std::vector <Match> Matcher;
+	std::vector <Match> TentativeMatch;
+	std::vector <Match> DeassignedMatch;
+	std::vector<Vec4i> CannyhierarchyThisCamera;
+	std::vector<std::vector<Point> > CannyContoursThisCamera;
+	std::vector<std::vector<Point> > CannyUsefulContoursThisCamera;
 	while (1) {
 		Mat BufferThesholdImageL;
 		if (!(*GrayL).empty()) {
@@ -170,6 +200,21 @@ void CannySearch(Mat* GrayL, Mat &ThesholdImageL,Mat &PrevL, Mat &PrevL2) {
 			threshold(BufferThesholdImageL, BufferThesholdImageL, 20, 255, THRESH_BINARY);
 
 			ThesholdImageL = BufferThesholdImageL;
+
+			//Find contours
+			findContours(ThesholdImageThisCamera, CannyContoursThisCamera, CannyhierarchyThisCamera, CV_RETR_TREE, CHAIN_APPROX_SIMPLE, Point(0, 0));
+			FindUsefulContours(CannyContoursThisCamera, CannyUsefulContoursThisCamera);
+			//End finding contours
+			//Data trade
+			if (CameraSide == LeftCam) {
+
+			}else{
+
+			}
+			//End data trade
+			GenerateMatchingList(CannyUsefulContoursThisCamera, CannyUsefulContoursOtherCamera, Matcher);
+			//Matcher
+			ResolveMatchList(Matcher, TentativeMatch);
 			//waitKey(30);
 		}
 		this_thread::sleep_for(2s);
@@ -360,149 +405,349 @@ void IDMatcher(std::vector <Match> InterframeMatchIndexes, std::vector <Match> O
 	}
 }
 
-int LeftCameraThread(VideoCapture capL, CalibrationDataParameters CalibrationData, ColourSearchParameters SliderValue, std::vector<std::vector<Point>> UsefulContoursR, std::vector<std::vector<Point>> &ExportedUsefulContoursL) {
-	Mat SrcImgL;
-	Mat CalibratedImgL;
-	Mat HSVImageL;
+int CameraThread(bool CameraSide, CalibrationDataParameters CalibrationData, ColourSearchParameters SliderValue,
+	std::vector<std::vector<Point>>* ImportedUsefulContoursOtherCamera,
+	std::vector<std::vector<Point>> &ExportedUsefulContoursThisCamera,
+	CenterPointDataParameters &ExportedCenterPointData,
+	CenterPointDataParameters* ImportedCenterPointData, std::vector<double> &ExportedDist) {
+	Mat SrcImgThisCamera;
+	Mat CalibratedImgThisCamera;
+	Mat HSVImageThisCamera;
 	std::vector <Match> Matcher;
 	std::vector <Match> TentativeMatch;
 	std::vector <Match> DeassignedMatch;
 
-	Mat ABSDiffSearchThesholdImageL;
-	Mat ABSDiffPrevL;
-	Mat ColourSearchThesholdImageL;
-	Mat GrayLForCanny;
+	Mat ABSDiffSearchThesholdImageThisCamera;
+	Mat ABSDiffPrevThisCamera;
+	Mat ColourSearchThesholdImageThisCamera;
+	Mat GrayForCannyThisCamera;
 
-	Mat ABSDiffSearchDialatedThesholdImageL;
-	Mat CannySearchThesholdImageL;
-	Mat ThesholdImageL;
-	Mat ColourSearchDialatedThesholdImageL;
+	Mat ABSDiffSearchDialatedThesholdImageThisCamera;
+	Mat CannySearchThesholdImageThisCamera;
+	Mat ThesholdImageThisCamera;
+	Mat ColourSearchDialatedThesholdImageThisCamera;
 
-	std::vector<std::vector<Point> > ContoursL;
-	std::vector<std::vector<Point> > UsefulContoursL;
-	std::vector<std::vector<Point> >PrevUsefulContoursL;
+	std::vector<std::vector<Point> > ContoursThisCamera;
+	std::vector<std::vector<Point> > UsefulContoursThisCamera;
+	std::vector<std::vector<Point> >PrevUsefulContoursThisCamera;
 
-	std::vector<Vec4i> hierarchyL;
-	std::vector<Match> PrevMatcherL;// (Left index,Right index , Match value)
+	std::vector<Vec4i> hierarchyThisCamera;
+	std::vector<Match> PrevMatcherThisCamera;// (Left index,Right index , Match value)
 
-	std::vector<Match> PrevTentativeMatch;// (Left index,Right index , Match value)
-	std::vector<Match> PrevTentativeMatchL;// (Left index,Right index , Match value)
-	std::vector<std::vector<Point> > contoursInterFrameMatchOldL, contoursInterFrameMatchOlderL;
+	std::vector<Match> PrevTentativeMatchThisCamera;// (Left index,Right index , Match value)
+	std::vector<std::vector<Point> > contoursInterFrameMatchOldThisCamera, contoursInterFrameMatchOlderThisCamera;
 
-	std::vector<Match> InterFrameMatchOldL;
-	std::vector<Match> TentativeInterFrameMatchOldL;
+	std::vector<Match> InterFrameMatchOldThisCamera;
+	std::vector<Match> TentativeInterFrameMatchOldThisCamera;
 	
-	Mat CannyPrevL;
-	Mat CannyPrevL2;
-	auto CannySearchThread = async(CannySearch, &GrayLForCanny,ref(CannySearchThesholdImageL),ref(CannyPrevL), ref(CannyPrevL2));
+	Mat CannyPrevThisCamera;
+	Mat CannyPrevThisCamera2;
 
+	std::vector<Point2f> VectorCenter_pointThisCamera;
+	std::vector<Point2f> OldVectorCenter_pointThisCamera;
+	std::vector<Point2f> OlderVectorCenter_pointThisCamera;
+	Point2f Center_pointThisCamera;
+	std::chrono::steady_clock::time_point ImgTimeStampThisCamera;
+	std::chrono::steady_clock::time_point OldImgTimeStampThisCamera;
+	std::chrono::steady_clock::time_point OlderImgTimeStampThisCamera;
+
+	VideoCapture capThisCamera;
+	if (CameraSide == LeftCam) {
+		capThisCamera.open(1);
+	}else{
+		capThisCamera.open(2);
+	}
+	auto CannySearchThread = async(CannySearch,CameraSide,&GrayForCannyThisCamera,ref(CannySearchThesholdImageThisCamera),ref(CannyPrevThisCamera), ref(CannyPrevThisCamera2));
 	while (1) {
-		Mat GrayL;
+		Mat GrayThisCamera;
 		vector<Mat> HSVChannels;
 
 		Matcher.clear();
 		TentativeMatch.clear();
 		DeassignedMatch.clear();
 
-		capL >> SrcImgL;
+		capThisCamera >> SrcImgThisCamera;
+
+		OlderImgTimeStampThisCamera = OldImgTimeStampThisCamera;
+		OldImgTimeStampThisCamera = ImgTimeStampThisCamera;
+		ImgTimeStampThisCamera =std::chrono::high_resolution_clock::now();
+
+		if (CameraSide == LeftCam) {
+			LeftTimeStampMutex.lock();
+		}else{
+			RightTimeStampMutex.lock();
+		}
+		ExportedCenterPointData.ImgTimeStamp= ImgTimeStampThisCamera;
+		ExportedCenterPointData.OldImgTimeStamp = OldImgTimeStampThisCamera;
+		if (CameraSide == LeftCam) {
+			LeftTimeStampMutex.unlock();
+		}else{
+			RightTimeStampMutex.unlock();
+		}
+
 		//Check image exists
-		if (SrcImgL.empty()) {
+		if (SrcImgThisCamera.empty()) {
 			std::cout << "Error: Image cannot be loaded!" << endl;
 			return -1;
 		}
 		//Apply calibrations
-		CalibrateLeftImage(SrcImgL, CalibrationData, CalibratedImgL);
+		if (CameraSide == LeftCam) {
+			CalibrateLeftImage(SrcImgThisCamera, CalibrationData, CalibratedImgThisCamera);
+		}else{
+			CalibrateRightImage(SrcImgThisCamera, CalibrationData, CalibratedImgThisCamera);
+		}
+		cvtColor(CalibratedImgThisCamera, HSVImageThisCamera, CV_BGR2HSV);
 
-		cvtColor(CalibratedImgL, HSVImageL, CV_BGR2HSV);
+		LightingCorrection(HSVImageThisCamera, HSVChannels, CalibratedImgThisCamera);
 
-		LightingCorrection(HSVImageL, HSVChannels, CalibratedImgL);
-
-		cvtColor(CalibratedImgL, GrayL, CV_BGR2GRAY);
+		cvtColor(CalibratedImgThisCamera, GrayThisCamera, CV_BGR2GRAY);
 
 		//Start searching
-		GrayLForCanny = GrayL;
-		thread ABSDiffSearchThread(ABSDiffSearch, GrayL, ref(ABSDiffSearchThesholdImageL), ref(ABSDiffPrevL));
-		thread ColourSearchThread(ColourSearch, HSVImageL, ref(ColourSearchThesholdImageL), SliderValue);
+		GrayForCannyThisCamera = GrayThisCamera;
+		thread ABSDiffSearchThread(ABSDiffSearch, GrayThisCamera, ref(ABSDiffSearchThesholdImageThisCamera), ref(ABSDiffPrevThisCamera));
+		thread ColourSearchThread(ColourSearch, HSVImageThisCamera, ref(ColourSearchThesholdImageThisCamera), SliderValue);
 
 		ABSDiffSearchThread.join();
 		ColourSearchThread.join();
 
 		//L
-		if (!CannySearchThesholdImageL.empty()) {
-			dilate(ABSDiffSearchThesholdImageL, ABSDiffSearchDialatedThesholdImageL, getStructuringElement(MORPH_ELLIPSE, Size(4, 4)));
-			subtract(CannySearchThesholdImageL, ABSDiffSearchDialatedThesholdImageL, ThesholdImageL);
-			addWeighted(ThesholdImageL, 1, ABSDiffSearchThesholdImageL, 1, 0, ThesholdImageL);
-		}else {
-			ThesholdImageL = ABSDiffSearchThesholdImageL;
-		}
-		dilate(ColourSearchThesholdImageL, ColourSearchDialatedThesholdImageL, getStructuringElement(MORPH_ELLIPSE, Size(6, 6)));
-		subtract(ThesholdImageL, ColourSearchDialatedThesholdImageL, ThesholdImageL);
-		addWeighted(ThesholdImageL, 1, ColourSearchThesholdImageL, 1, 0, ThesholdImageL);
+		dilate(ColourSearchThesholdImageThisCamera, ColourSearchDialatedThesholdImageThisCamera, getStructuringElement(MORPH_ELLIPSE, Size(6, 6)));
+		subtract(ABSDiffSearchThesholdImageThisCamera, ColourSearchDialatedThesholdImageThisCamera, ThesholdImageThisCamera);
+		addWeighted(ThesholdImageThisCamera, 1, ColourSearchThesholdImageThisCamera, 1, 0, ThesholdImageThisCamera);
 
 		//Find contours
-		findContours(ThesholdImageL, ContoursL, hierarchyL, CV_RETR_TREE, CHAIN_APPROX_SIMPLE, Point(0, 0));
-		FindUsefulContours(ContoursL, UsefulContoursL);
+		findContours(ThesholdImageThisCamera, ContoursThisCamera, hierarchyThisCamera, CV_RETR_TREE, CHAIN_APPROX_SIMPLE, Point(0, 0));
+		FindUsefulContours(ContoursThisCamera, UsefulContoursThisCamera);
 		//End finding contours
 
 		//Extract the left useful contours from TentativeMatch
-		if (UsefulContoursL.size() != 0) {
-			ExportedUsefulContoursL = UsefulContoursL;
+		if (!UsefulContoursThisCamera.empty()) {
+			if (CameraSide == LeftCam) {
+				LeftContourMutex.lock();
+			}else{
+				RightContourMutex.lock();
+			}
+			ExportedUsefulContoursThisCamera = UsefulContoursThisCamera;
+			if (CameraSide == LeftCam) {
+				LeftContourMutex.unlock();
+			}else{
+				RightContourMutex.unlock();
+			}
 			//Extract the left useful contours from PrevTentativeMatch
-			if (PrevUsefulContoursL.empty()) {
-				PrevUsefulContoursL = UsefulContoursL;
+			if (PrevUsefulContoursThisCamera.empty()) {
+				PrevUsefulContoursThisCamera = UsefulContoursThisCamera;
 			}
 			///////
-			GenerateMatchingList(PrevUsefulContoursL, UsefulContoursL, PrevMatcherL);
-			ResolveMatchList(PrevMatcherL, PrevTentativeMatchL);
+			GenerateMatchingList(PrevUsefulContoursThisCamera, UsefulContoursThisCamera, PrevMatcherThisCamera);
+			ResolveMatchList(PrevMatcherThisCamera, PrevTentativeMatchThisCamera);
 			////////
-			PrevUsefulContoursL = UsefulContoursL;
+			PrevUsefulContoursThisCamera = UsefulContoursThisCamera;
 
-			PrevMatcherL.clear();
+			PrevMatcherThisCamera.clear();
 		}
 		int InterframeMatchCounterL = 0;
 		int InterframeMatchCounterR = 0;
-		std::vector <Point2i> InterframeMatchIndexes;
-		std::vector <Point2i> OldInterframeMatchIndexes;
-		std::vector <Point3i> InterframeMatchIndexesComplete;
-		if (InterframeMatchIndexes.size()) {
-			OldInterframeMatchIndexes = InterframeMatchIndexes;
-		}
-		if ((UsefulContoursL.size() != 0) && (PrevTentativeMatchL.size() != 0)) {
+		std::vector <Point3i> InterframeMatchIndexesCompleteThisCamera;
+
+		if ((!UsefulContoursThisCamera.empty()) && (!PrevTentativeMatchThisCamera.empty())) {
 			unsigned int i = 0;
-			contoursInterFrameMatchOldL.clear();
-			while (i < InterframeMatchIndexes.size()) {
-				contoursInterFrameMatchOldL.push_back(UsefulContoursL[PrevTentativeMatch[i].RightIndex]);
+			contoursInterFrameMatchOldThisCamera.clear();
+			while (i < PrevTentativeMatchThisCamera.size()) {
+				if (UsefulContoursThisCamera.size()>PrevTentativeMatchThisCamera[i].RightIndex) {//Check value is in range
+					contoursInterFrameMatchOldThisCamera.push_back(UsefulContoursThisCamera[PrevTentativeMatchThisCamera[i].RightIndex]);
+				}
 				i++;
 			}
-			if (contoursInterFrameMatchOldL.size()) {
-				GenerateMatchingList(contoursInterFrameMatchOldL, contoursInterFrameMatchOlderL, InterFrameMatchOldL);
-				ResolveMatchList(InterFrameMatchOldL, TentativeInterFrameMatchOldL);
+			if (!contoursInterFrameMatchOldThisCamera.empty()) {
+				GenerateMatchingList(contoursInterFrameMatchOldThisCamera, contoursInterFrameMatchOlderThisCamera, InterFrameMatchOldThisCamera);
+				ResolveMatchList(InterFrameMatchOldThisCamera, TentativeInterFrameMatchOldThisCamera);
 
-				IDMatcher(PrevTentativeMatch, TentativeInterFrameMatchOldL, InterframeMatchIndexesComplete);
-				contoursInterFrameMatchOlderL = contoursInterFrameMatchOldL;
+				IDMatcher(PrevTentativeMatchThisCamera, TentativeInterFrameMatchOldThisCamera, InterframeMatchIndexesCompleteThisCamera);
+				contoursInterFrameMatchOlderThisCamera = contoursInterFrameMatchOldThisCamera;
 			}
 		}
 
+		//Data trade
+		std::vector<std::vector<Point>> UsefulContoursOtherCamera;
+		if (CameraSide == RightCam) {
+			LeftContourMutex.lock();
+		}else{
+			RightContourMutex.lock();
+		}
+		if (!(*ImportedUsefulContoursOtherCamera).empty()) {
+			UsefulContoursOtherCamera = *ImportedUsefulContoursOtherCamera;
+		}
+		if (CameraSide == RightCam) {
+			LeftContourMutex.unlock();
+		}else{
+			RightContourMutex.unlock();
+		}
 
-		PrevTentativeMatchL.clear();
-
-		GenerateMatchingList(UsefulContoursL, UsefulContoursR, Matcher);
+		PrevTentativeMatchThisCamera.clear();
+		GenerateMatchingList(UsefulContoursThisCamera, UsefulContoursOtherCamera, Matcher);
 		//Matcher
 		ResolveMatchList(Matcher, TentativeMatch);
 		
+		//Find centre points
+		if (!OldVectorCenter_pointThisCamera.empty()) {
+			OlderVectorCenter_pointThisCamera = OldVectorCenter_pointThisCamera;
+		}
+		if (!VectorCenter_pointThisCamera.empty()) {
+			OldVectorCenter_pointThisCamera = VectorCenter_pointThisCamera;
+		}
 
-		//Pull previous match of right
-		//PUll previous centerpoints of matched right
-		//Calculate rights interpollated position
-		//Calculate distance
+		Mat drawingThisCamera = Mat::zeros((CalibratedImgThisCamera).size(), CV_8UC3);
+		unsigned int MatchCounter = 0;
+		std::vector<RotatedRect> minRectThisCamera((UsefulContoursThisCamera).size());
+		unsigned int i=0;
+		while (i < UsefulContoursThisCamera.size()) {
+		//while (i < InterframeMatchIndexesCompleteL.size()) {
+			Point2f rect_pointsThisCamera[4];
+			Center_pointThisCamera = { 0,0 };
+			Scalar color = Scalar(255, 255, 255);
+			minRectThisCamera[TentativeMatch[MatchCounter].LeftIndex] = minAreaRect(Mat(UsefulContoursThisCamera[TentativeMatch[MatchCounter].LeftIndex]));
+			drawContours(drawingThisCamera, UsefulContoursThisCamera, TentativeMatch[MatchCounter].LeftIndex, color, 1, 8, std::vector<Vec4i>(), 0, Point());
+			//minRectL[TentativeMatch[MatchCounter].LeftIndex] = minAreaRect(Mat(UsefulContoursL[InterframeMatchIndexesCompleteL[i].x]));
+			//drawContours(drawingL, UsefulContoursL, InterframeMatchIndexesCompleteL[i].x, color, 1, 8, std::vector<Vec4i>(), 0, Point());
+			//Find the center point and draw rotated bounding box lines
+			minRectThisCamera[TentativeMatch[MatchCounter].LeftIndex].points(rect_pointsThisCamera);
+			for (int j = 0; j < 4; j++) {
+				line(drawingThisCamera, rect_pointsThisCamera[j], rect_pointsThisCamera[(j + 1) % 4], color, 1, 8);
+				Center_pointThisCamera += rect_pointsThisCamera[j];
+			}
+			Center_pointThisCamera /= 4;
+			VectorCenter_pointThisCamera.push_back(Center_pointThisCamera);
+			i++;
+		}
+
+		//Export data
+		if (CameraSide == LeftCam) {
+			LeftVectorCenterMutex.lock();
+		}else{
+			RightVectorCenterMutex.lock();
+		}
+		if (!InterframeMatchIndexesCompleteThisCamera.empty()) {
+			((ExportedCenterPointData).InterframeMatchIndexesComplete) = InterframeMatchIndexesCompleteThisCamera;
+		}
+		if (!VectorCenter_pointThisCamera.empty()) {
+			(ExportedCenterPointData.VectorCenter_point) = VectorCenter_pointThisCamera;
+		}
+		if (!OldVectorCenter_pointThisCamera.empty()) {
+			(ExportedCenterPointData.OldVectorCenter_point) = OldVectorCenter_pointThisCamera;
+		}
+		if (!OlderVectorCenter_pointThisCamera.empty()) {
+			(ExportedCenterPointData.OlderVectorCenter_point) = OlderVectorCenter_pointThisCamera;
+		}
+		if (CameraSide == LeftCam) {
+			LeftVectorCenterMutex.unlock();
+		}else {
+			RightVectorCenterMutex.unlock();
+		}
+		//End export data
+
+		//Import data
+		std::vector<Point2f> VectorCenter_pointOtherCamera;
+		std::vector<Point2f> OldVectorCenter_pointOtherCamera;
+		std::vector<Point2f> OlderVectorCenter_pointOtherCamera;
+		std::vector<Point3i> InterframeMatchIndexesCompleteOtherCamera;
+		std::chrono::steady_clock::time_point ImgTimeStampOtherCamera;
+		std::chrono::steady_clock::time_point OldImgTimeStampOtherCamera;
+		std::chrono::steady_clock::time_point OlderImgTimeStampOtherCamera;
+
+		if (CameraSide == RightCam) {
+			LeftVectorCenterMutex.lock();
+		}else{
+			RightVectorCenterMutex.lock();
+		}
+		if(!((*ImportedCenterPointData).VectorCenter_point).empty()){
+			VectorCenter_pointOtherCamera = (*ImportedCenterPointData).VectorCenter_point;
+		}
+		if (!((*ImportedCenterPointData).OldVectorCenter_point).empty()) {
+			OldVectorCenter_pointOtherCamera = (*ImportedCenterPointData).OldVectorCenter_point;
+		}
+		if (!((*ImportedCenterPointData).OlderVectorCenter_point).empty()) {
+			OlderVectorCenter_pointOtherCamera = (*ImportedCenterPointData).OlderVectorCenter_point;
+		}
+		if (!((*ImportedCenterPointData).InterframeMatchIndexesComplete).empty()) {
+			InterframeMatchIndexesCompleteOtherCamera = (*ImportedCenterPointData).InterframeMatchIndexesComplete;
+		}
+		if (CameraSide == RightCam) {
+			LeftVectorCenterMutex.unlock();
+		}else{
+			RightVectorCenterMutex.unlock();
+		}
+		//Importing time stamp info
+		if (CameraSide == RightCam) {
+			LeftTimeStampMutex.lock();
+		}else{
+			RightTimeStampMutex.lock();
+		}
+		ImgTimeStampOtherCamera = (*ImportedCenterPointData).ImgTimeStamp;
+		OldImgTimeStampOtherCamera = (*ImportedCenterPointData).OldImgTimeStamp;
+		OlderImgTimeStampOtherCamera = (*ImportedCenterPointData).OlderImgTimeStamp;
+		if (CameraSide == RightCam) {
+			LeftTimeStampMutex.unlock();
+		}else{
+			RightTimeStampMutex.unlock();
+		}
+		//End importing data
+
+		//Calculate rights interpolated position
+		std::vector<Point2f> InterpolatedVectorCenter_pointOtherCamera;
+		i = 0;
+		std::vector<double> dist;
+		while (i < InterframeMatchIndexesCompleteOtherCamera.size()) {
+			//Extract centerpoints from vectors
+			Point2f InterpolationCalcCenter_pointR = VectorCenter_pointOtherCamera[InterframeMatchIndexesCompleteOtherCamera[i].x];
+			Point2f InterpolationCalcOldCenter_pointR = OldVectorCenter_pointOtherCamera[InterframeMatchIndexesCompleteOtherCamera[i].y];
+			Point2f InterpolationCalcOlderCenter_pointR = OlderVectorCenter_pointOtherCamera[InterframeMatchIndexesCompleteOtherCamera[i].z];
+
+			//calc time diff
+			steady_clock::duration InterpollationTimeDiffOne = OldImgTimeStampOtherCamera - OlderImgTimeStampOtherCamera;
+			steady_clock::duration InterpollationTimeDiffTwo = ImgTimeStampOtherCamera - OldImgTimeStampOtherCamera;
+			steady_clock::duration InterpollationTimeDiffThree = ImgTimeStampThisCamera - ImgTimeStampOtherCamera;
+
+			//convert to float
+			float InterpollationTimeDiffOne_nseconds = float(InterpollationTimeDiffOne.count()) * steady_clock::period::num / steady_clock::period::den;
+			float InterpollationTimeDiffTwo_nseconds = float(InterpollationTimeDiffTwo.count()) * steady_clock::period::num / steady_clock::period::den;
+			float InterpollationTimeDiffThree_nseconds = float(InterpollationTimeDiffThree.count()) * steady_clock::period::num / steady_clock::period::den;
+
+			//calc interpolated centerpoint
+			Point2f InterpollationPixelVelocityOne = (InterpolationCalcOldCenter_pointR - InterpolationCalcOlderCenter_pointR) / InterpollationTimeDiffOne_nseconds;
+			Point2f InterpollationPixelVelocityTwo = (InterpolationCalcCenter_pointR - InterpolationCalcOldCenter_pointR) / InterpollationTimeDiffTwo_nseconds;
+			Point2f InterpollationPixelAcceleration = (InterpollationPixelVelocityTwo - InterpollationPixelVelocityOne) / InterpollationTimeDiffTwo_nseconds;
+			Point2f InterpollationPixelVelocityThree = InterpollationPixelVelocityTwo + (InterpollationPixelAcceleration * InterpollationTimeDiffThree_nseconds);
+			Point2f InterpolatedCenterPointOtherCamera = (InterpollationPixelVelocityThree * InterpollationTimeDiffThree_nseconds) + InterpolationCalcCenter_pointR;
+			//place centerpoint into vector
+			InterpolatedVectorCenter_pointOtherCamera.push_back(InterpolatedCenterPointOtherCamera);
+
+			//Calculate distance
+			int disp;
+			if (CameraSide == LeftCam) {
+				disp = VectorCenter_pointThisCamera[i].x - InterpolatedVectorCenter_pointOtherCamera[i].x;
+			}else {
+				disp = InterpolatedVectorCenter_pointOtherCamera[i].x - VectorCenter_pointThisCamera[i].x;
+			}
+			dist.push_back(((201.6 * 4) / (disp*0.000043)) / 1000);
+			i++;
+		}
+		if (CameraSide == LeftCam) {
+			LeftDistanceMutex.lock();
+		}else {
+			RightDistanceMutex.lock();
+		}
+		ExportedDist = dist;
+		if (CameraSide == LeftCam) {
+			LeftDistanceMutex.unlock();
+		}else{
+			RightDistanceMutex.unlock();
+		}
 	}
 }
 
 
 int main() {
 	bool DebugMode = false;
-	VideoCapture capL;
-	VideoCapture capR;
 	Mat SrcImgL;
 	Mat SrcImgR;
 	Mat CalibratedImgL;
@@ -510,9 +755,6 @@ int main() {
 
 	CalibrationDataParameters CalibrationData;
 	LoadCalibrationData(CalibrationData);
-
-	capL.open(1);
-	capR.open(2);
 
 	namedWindow("SrcImgL", CV_WINDOW_AUTOSIZE);
 	namedWindow("SrcImgR", CV_WINDOW_AUTOSIZE);
@@ -620,6 +862,11 @@ int main() {
 	bool CannySearchThreadStatusReady = true;
 	unsigned int MainLoopCounter = 0;
 	auto CannySearchThread = async(CannySearch, &GrayLForCanny, &GrayRForCanny, ref(CannySearchThesholdImageL), ref(CannySearchThesholdImageR), ref(CannyPrevL), ref(CannyPrevR), ref(CannyPrevL2), ref(CannyPrevR2));
+	int LeftCamThread = async(CameraThread, LeftCam, CalibrationData, SliderValue,
+		std::vector<std::vector<Point>> ImportedUsefulContoursOtherCamera,
+		std::vector<std::vector<Point>> ExportedUsefulContoursThisCamera,
+		CenterPointDataParameters ExportedCenterPointData,
+		CenterPointDataParameters ImportedCenterPointData, std::vector<double> ExportedDist);
 	while (1) {
 		namedWindow("Sliders", CV_WINDOW_AUTOSIZE);
 		namedWindow("Sliders2", CV_WINDOW_AUTOSIZE);
@@ -645,49 +892,6 @@ int main() {
 		if (SliderValue.iMorphologicalClosing == 0) {
 			SliderValue.iMorphologicalClosing = 1;
 		}
-
-
-
-		Mat GrayL, GrayR;
-		Matcher.clear();
-		TentativeMatch.clear();
-		DeassignedMatch.clear();
-
-		capL >> SrcImgL;
-		capR >> SrcImgR;
-
-		//Check image exists
-		if (SrcImgL.empty()) {
-			std::cout << "Error: Image cannot be loaded!" << endl;
-			return -1;
-		}
-		//Check image exists
-		if (SrcImgR.empty()) {
-			std::cout << "Error: Image cannot be loaded!" << endl;
-			return -1;
-		}
-
-		//Apply calibrations
-		CalibrateLeftImage(SrcImgL, CalibrationData, CalibratedImgL);
-		CalibrateRightImage(SrcImgR, CalibrationData, CalibratedImgR);
-
-		cvtColor(CalibratedImgL, HSVImageL, CV_BGR2HSV);
-		cvtColor(CalibratedImgR, HSVImageR, CV_BGR2HSV);
-
-		LightingCorrection(HSVImageL, HSVChannels, CalibratedImgL);
-		LightingCorrection(HSVImageR, HSVChannels, CalibratedImgR);
-
-		cvtColor(CalibratedImgL, GrayL, CV_BGR2GRAY);
-		cvtColor(CalibratedImgR, GrayR, CV_BGR2GRAY);
-
-		//Start searching
-		GrayLForCanny= GrayL;
-		GrayRForCanny = GrayR;
-		thread ABSDiffSearchThread(ABSDiffSearch,GrayL, GrayR, ref(ABSDiffSearchThesholdImageL), ref(ABSDiffSearchThesholdImageR), ref(ABSDiffPrevL), ref(ABSDiffPrevR));
-		thread ColourSearchThread(ColourSearch, HSVImageL, HSVImageR, ref(ColourSearchThesholdImageL), ref(ColourSearchThesholdImageR),SliderValue);
-
-		ABSDiffSearchThread.join();
-		ColourSearchThread.join();
 
 		if (DebugMode == true) {
 			imshow("SrcImgL", SrcImgL);
@@ -722,31 +926,6 @@ int main() {
 			destroyWindow("CannySearchThesholdImageR");
 		}
 
-		//L
-		if (!CannySearchThesholdImageL.empty()) {
-			dilate(ABSDiffSearchThesholdImageL, ABSDiffSearchDialatedThesholdImageL, getStructuringElement(MORPH_ELLIPSE, Size(4, 4)));
-			subtract(CannySearchThesholdImageL, ABSDiffSearchDialatedThesholdImageL, ThesholdImageL);
-			addWeighted(ThesholdImageL, 1, ABSDiffSearchThesholdImageL, 1, 0, ThesholdImageL);
-		}else {
-			ThesholdImageL = ABSDiffSearchThesholdImageL;
-		}
-		dilate(ColourSearchThesholdImageL, ColourSearchDialatedThesholdImageL, getStructuringElement(MORPH_ELLIPSE, Size(6, 6)));
-		subtract(ThesholdImageL, ColourSearchDialatedThesholdImageL, ThesholdImageL);
-		addWeighted(ThesholdImageL, 1, ColourSearchThesholdImageL, 1, 0, ThesholdImageL);
-
-		//R
-		if (!CannySearchThesholdImageR.empty()) {
-			dilate(ABSDiffSearchThesholdImageR, ABSDiffSearchDialatedThesholdImageR, getStructuringElement(MORPH_ELLIPSE, Size(4, 4)));
-			subtract(CannySearchThesholdImageR, ABSDiffSearchDialatedThesholdImageR, ThesholdImageR);
-			addWeighted(ThesholdImageR, 1, ABSDiffSearchThesholdImageR, 1, 0, ThesholdImageR);
-		}else {
-			ThesholdImageR = ABSDiffSearchThesholdImageR;
-		}
-		dilate(ColourSearchThesholdImageR, ColourSearchDialatedThesholdImageR, getStructuringElement(MORPH_ELLIPSE, Size(6, 6)));
-		subtract(ThesholdImageR, ColourSearchDialatedThesholdImageR, ThesholdImageR);
-		addWeighted(ThesholdImageR, 1, ColourSearchThesholdImageR, 1, 0, ThesholdImageR);
-
-		//End searching
 		if (DebugMode == true) {
 			imshow("FinalThresholdimgL", ThesholdImageL);
 			imshow("FinalThresholdimgR", ThesholdImageR);
@@ -754,72 +933,7 @@ int main() {
 			destroyWindow("FinalThresholdimgL");
 			destroyWindow("FinalThresholdimgR");
 		}
-		//Find contours
-		findContours(ThesholdImageL, ContoursL, hierarchyL, CV_RETR_TREE, CHAIN_APPROX_SIMPLE, Point(0, 0));
-		findContours(ThesholdImageR, ContoursR, hierarchyR, CV_RETR_TREE, CHAIN_APPROX_SIMPLE, Point(0, 0));
-		FindUsefulContours(ContoursL, UsefulContoursL);
-		FindUsefulContours(ContoursR, UsefulContoursR);
-		//End finding contours
-		
-		//Extract the left useful contours from TentativeMatch
-		if ((UsefulContoursL.size() != 0) && (UsefulContoursR.size() != 0)) {
-			
 
-			//Extract the left useful contours from PrevTentativeMatch
-			if (PrevUsefulContoursL.empty()) {
-				PrevUsefulContoursL = UsefulContoursL;
-			}
-			if (PrevUsefulContoursR.empty()) {
-				PrevUsefulContoursR = UsefulContoursR;
-			}
-			///////
-			GenerateMatchingList(PrevUsefulContoursL, UsefulContoursL, PrevMatcherL);
-			ResolveMatchList(PrevMatcherL, PrevTentativeMatchL);
-			GenerateMatchingList(PrevUsefulContoursR, UsefulContoursR, PrevMatcherR);
-			ResolveMatchList(PrevMatcherR, PrevTentativeMatchR);
-			////////
-			PrevUsefulContoursL = UsefulContoursL;
-			PrevUsefulContoursR = UsefulContoursR;
-
-			PrevMatcherL.clear();
-			PrevMatcherR.clear();
-			//PrevTentativeMatchR.clear();
-		}
-
-		int InterframeMatchCounterL = 0;
-		int InterframeMatchCounterR = 0;
-		std::vector <Point2i> InterframeMatchIndexes;
-		std::vector <Point2i> OldInterframeMatchIndexes;
-		std::vector <Point3i> InterframeMatchIndexesComplete;
-		if (InterframeMatchIndexes.size()) {
-			OldInterframeMatchIndexes = InterframeMatchIndexes;
-		}
-		if ((UsefulContoursL.size() != 0) && (PrevTentativeMatchL.size() != 0)) {
-			unsigned int i=0;
-			contoursInterFrameMatchOldL.clear();
-			while (i < InterframeMatchIndexes.size()) {
-				contoursInterFrameMatchOldL.push_back(UsefulContoursL[PrevTentativeMatch[i].RightIndex]);
-				i++;
-			}
-			if (contoursInterFrameMatchOldL.size()) {
-				GenerateMatchingList(contoursInterFrameMatchOldL, contoursInterFrameMatchOlderL, InterFrameMatchOldL);
-				ResolveMatchList(InterFrameMatchOldL, TentativeInterFrameMatchOldL);
-
-				IDMatcher(PrevTentativeMatch, TentativeInterFrameMatchOldL, InterframeMatchIndexesComplete);
-				contoursInterFrameMatchOlderL = contoursInterFrameMatchOldL;
-			}
-		}
-
-
-		PrevTentativeMatchL.clear();
-		PrevTentativeMatchR.clear();
-		//printf("InterframeMatchCounterL:%d\n", InterframeMatchCounter);
-		//End generating new contour vectors
-		//UsefulContoursL = NewUsefulContoursL;
-
-		GenerateMatchingList(UsefulContoursL, UsefulContoursR, Matcher);
-		//Matcher
-		ResolveMatchList(Matcher, TentativeMatch);
 
 
 		unsigned int MatchCounter = 0;
@@ -907,7 +1021,6 @@ int main() {
 		waitKey(20);
 	}
 }
-
 
 
 
