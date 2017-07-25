@@ -155,11 +155,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\..\..\OpenCV\opencv\sources\samples\cpp\stereo_match.cpp" />
+    <ClCompile Include="DistanceCalculator.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="Match.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="DistanceCalculator.hpp" />
     <ClInclude Include="Match.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
